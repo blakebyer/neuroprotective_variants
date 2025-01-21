@@ -22,12 +22,12 @@ def get_subgraph(id):
     
     if response.status_code == 200:
         go_data = response.json()
-        return go_data
+        return go_data # returns dictionary
     else:
         print("Failed to retrieve data.")
 
 def get_gene_functions(id):
-    """Returns dictionary of gene functions annotated to the CURIE identifier of the gene. Use UniProtKB:id because it is standard."""
+    """Returns dataframe of gene functions annotated to the CURIE identifier of the gene. Use UniProtKB:id because it is standard."""
     url = f"{base_url}/api/bioentity/gene/{id}/function"
     response = requests.get(url)
 
