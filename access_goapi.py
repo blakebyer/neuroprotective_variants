@@ -68,3 +68,5 @@ pos = nx.spring_layout(G)  # Layout for better visualization
 nx.draw(G, pos, with_labels=True, node_color='lightblue', edge_color='gray', node_size=2000, font_size=10)
 plt.title('Network Graph from Dataframe')
 plt.show()
+
+# Get go cam models: https://app.swaggerhub.com/apis-docs/geneontology/gosparql/2.2#/Gene%20Products/get_gp__id__models
