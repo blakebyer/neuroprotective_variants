@@ -45,7 +45,7 @@ def get_gene_functions(id):
 # id = "GO:0021675" # neurodevelopment
 # go_info = get_subgraph(id)
 
-uniprot_id = "UniProtKB:P02649"
+uniprot_id = "UniProtKB:P01137"
 
 gene_func = get_gene_functions(uniprot_id) # dataframe
 
@@ -64,7 +64,7 @@ G = nx.from_pandas_edgelist(plotting_df, source='subject.label', target='object.
 
 # Plot the graph
 plt.figure(figsize=(8, 6))
-pos = nx.spring_layout(G)  # Layout for better visualization
+pos = nx.shell_layout(G)  # Layout for better visualization
 nx.draw(G, pos, with_labels=True, node_color='lightblue', edge_color='gray', node_size=2000, font_size=10)
 plt.title('Network Graph from Dataframe')
 plt.show()
