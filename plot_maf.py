@@ -24,12 +24,37 @@ def clean_fold_enrichment(value):
     return pd.to_numeric(value, errors='coerce')  # Convert other values normally
 
 # Apply function to the column
-molF['Fold Enrichment'] = molF['Fold Enrichment'].apply(clean_fold_enrichment).dropna().sort_values(ascending=False)
+molF['Fold Enrichment'] = molF['Fold Enrichment'].apply(clean_fold_enrichment).sort_values(ascending=False)
 
-molF.plot(kind='barh', x='Molecular Function', y='Fold Enrichment', legend=False)
-plt.ylabel("Molecular Function")
-plt.xlabel("Fold Enrichment")
-plt.show()  
+molF['Genes'] = pd.to_numeric(molF['Genes'], errors='coerce')
+
+# fig, ax = plt.subplots()
+# molF.plot(kind='barh', x='Molecular Function', y='Fold Enrichment', legend=False)
+# molF.plot.scatter(x = 'Genes', y = 'Molecular Function')
+# plt.subplots_adjust(left=0.6) 
+# plt.yticks(fontsize=8)
+# plt.ylabel("Molecular Function")
+# plt.xlabel("Fold Enrichment")
+# plt.show()  
+
+# Create subplots
+fig, ax = plt.subplots(figsize=(8, 6))
+
+# Plot horizontal bars
+ax.barh(molF["Molecular Function"], molF["Fold Enrichment"], color='skyblue', label="Fold Enrichment")
+
+# Overlay scatter plot (points at end of bars, sized by Gene Count)
+ax.scatter(molF["Fold Enrichment"], molF["Molecular Function"], 
+           s=molF["Genes"] * 6,  # Scale point size for visibility
+           color='red', edgecolors='black', label="Genes")
+
+# Formatting
+plt.subplots_adjust(left=0.6)  # Adjust spacing for labels
+ax.set_ylabel("Molecular Function")
+ax.set_xlabel("Fold Enrichment")
+ax.legend()  # Show legend
+
+plt.show()
 
 
 
