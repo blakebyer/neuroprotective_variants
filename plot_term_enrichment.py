@@ -23,7 +23,7 @@ def clean_fold_enrichment(value):
         return 100  # Convert ">100" to 100
     return pd.to_numeric(value, errors='coerce')  # Convert other values normally
 
-def go_plot(dataframe, go_type):
+def go_enrichment_plot(dataframe, go_type):
     # sort fold enrichment descending 
     dataframe['Fold Enrichment'] = dataframe['Fold Enrichment'].apply(clean_fold_enrichment).sort_values(ascending=False)
 
@@ -33,12 +33,12 @@ def go_plot(dataframe, go_type):
     fig, ax = plt.subplots(figsize=(10,8))
 
     # Plot horizontal bars
-    ax.barh(dataframe[go_type], dataframe["Fold Enrichment"], color='skyblue', label="Fold Enrichment", height=0.5)
+    ax.barh(dataframe[go_type], dataframe["Fold Enrichment"], color="skyblue", label="Fold Enrichment", height=0.2)
 
     # Overlay scatter plot (points at end of bars, sized by number of genes
     ax.scatter(dataframe["Fold Enrichment"], dataframe[go_type], 
             s=dataframe["Genes"] * 5,  # Scale point size for visibility
-            color='red', edgecolors='black', label="Genes")
+            color='orangered', edgecolors='black', label="Genes")
 
     # Formatting
     plt.subplots_adjust(left=0.6)  # Adjust spacing for labels
@@ -47,10 +47,30 @@ def go_plot(dataframe, go_type):
     ax.legend()  # Show legend
     plt.show()
 
-molF_plot = go_plot(molF, "Molecular Function")
+def go_volcano_plot(dataframe, go_type):
+    dataframe["FDR"] = pd.to_numeric(dataframe["FDR"], errors='coerce')
+
+    dataframe["FDR"] = np.log10(np.add(dataframe["FDR"], 1))
+
+    dataframe["P-value"] = pd.to_numeric(dataframe["P-value"], errors='coerce')
+
+    dataframe["P-value"] = np.log10(np.add(dataframe["P-value"], 1))
+
+    plt.scatter(dataframe["Fold Enrichment"], dataframe["P-value"], color = "plum")
+    plt.xlabel(f"{go_type} Fold Enrichment")
+    plt.ylabel("log(P-value)")
+    plt.show()
+
+
+molF_plot = go_enrichment_plot(molF, "Molecular Function")
 
 #bioP_plot = go_plot(bioP, "Biological Process") # major overplotting issues
+#bioP_volcano = go_volcano_plot(bioP, "Biological Process")
 
-celC_plot = go_plot(celC, "Cellular Component")
+celC_plot = go_enrichment_plot(celC, "Cellular Component")
+
+molF_volcano = go_volcano_plot(molF, "Molecular Function")
+
+celC_volcano = go_volcano_plot(celC, "Cellular Component")
 
 
