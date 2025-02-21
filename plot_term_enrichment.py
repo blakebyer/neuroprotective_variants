@@ -48,7 +48,7 @@ def go_enrichment_plot(dataframe, go_type, top_n=None):
     ax.legend()  # Show legend
     plt.show()
 
-def go_volcano_plot(dataframe, go_type):
+def go_volcano_plot(dataframe, go_type, color):
     dataframe = dataframe.copy()
     dataframe['Fold Enrichment'] = dataframe['Fold Enrichment'].apply(clean_fold_enrichment).sort_values(ascending=False)
     
@@ -60,21 +60,50 @@ def go_volcano_plot(dataframe, go_type):
 
     dataframe["P-value"] = np.log10(np.add(dataframe["P-value"], 1))
 
-    plt.scatter(dataframe["Fold Enrichment"], dataframe["P-value"], color = "plum")
+    plt.scatter(dataframe["Fold Enrichment"], dataframe["P-value"], color = color)
     plt.xlabel(f"{go_type} Fold Enrichment")
     plt.ylabel("log(P-value)")
+    plt.show()
+
+def volcano_overlay(dataframe, colors):
+    dataframe = dataframe.copy()
+    dataframe['Fold Enrichment'] = dataframe['Fold Enrichment'].apply(clean_fold_enrichment).sort_values(ascending=False)
+    
+    dataframe["FDR"] = pd.to_numeric(dataframe["FDR"], errors='coerce')
+
+    dataframe["FDR"] = np.log10(np.add(dataframe["FDR"], 1))
+
+    dataframe["P-value"] = pd.to_numeric(dataframe["P-value"], errors='coerce')
+
+    dataframe["P-value"] = np.log10(np.add(dataframe["P-value"], 1))
+    # Create subplots
+    fig, ax = plt.subplots(figsize=(5,7))
+
+    # Plot horizontal bars
+    ax.barh(dataframe[go_type], dataframe["Fold Enrichment"], color="skyblue", label="Fold Enrichment", height=0.2)
+
+    # Overlay scatter plot (points at end of bars, sized by number of genes
+    ax.scatter(dataframe["Fold Enrichment"], dataframe[go_type], 
+            s=dataframe["Genes"] * 5,  # Scale point size for visibility
+            color='orangered', edgecolors='black', label="Genes")
+
+    # Formatting
+    plt.subplots_adjust(left=0.6)  # Adjust spacing for labels
+    ax.set_ylabel(go_type)
+    ax.set_xlabel("Fold Enrichment")
+    ax.legend()  # Show legend
     plt.show()
 
 
 molF_plot = go_enrichment_plot(molF, "Molecular Function")
 
 bioP_plot = go_enrichment_plot(bioP, "Biological Process", 50) # major overplotting issues, so select bottom 50 enrichment scores (many genes express this process)
-bioP_volcano = go_volcano_plot(bioP, "Biological Process")
+bioP_volcano = go_volcano_plot(bioP, "Biological Process", "teal")
 
 celC_plot = go_enrichment_plot(celC, "Cellular Component")
 
-molF_volcano = go_volcano_plot(molF, "Molecular Function")
+molF_volcano = go_volcano_plot(molF, "Molecular Function", "orangered")
 
-celC_volcano = go_volcano_plot(celC, "Cellular Component")
+celC_volcano = go_volcano_plot(celC, "Cellular Component", "violet")
 
 
