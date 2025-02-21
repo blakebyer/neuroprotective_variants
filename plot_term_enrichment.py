@@ -23,9 +23,10 @@ def clean_fold_enrichment(value):
         return 100  # Convert ">100" to 100
     return pd.to_numeric(value, errors='coerce')  # Convert other values normally
 
-def go_enrichment_plot(dataframe, go_type):
+def go_enrichment_plot(dataframe, go_type, top_n=None):
     # sort fold enrichment descending 
-    dataframe['Fold Enrichment'] = dataframe['Fold Enrichment'].apply(clean_fold_enrichment).sort_values(ascending=False)
+    dataframe = dataframe.copy()
+    dataframe['Fold Enrichment'] = dataframe['Fold Enrichment'].apply(clean_fold_enrichment).sort_values(ascending=True)[:top_n]
 
     dataframe['Genes'] = pd.to_numeric(dataframe['Genes'], errors='coerce')
 
@@ -48,6 +49,9 @@ def go_enrichment_plot(dataframe, go_type):
     plt.show()
 
 def go_volcano_plot(dataframe, go_type):
+    dataframe = dataframe.copy()
+    dataframe['Fold Enrichment'] = dataframe['Fold Enrichment'].apply(clean_fold_enrichment).sort_values(ascending=False)
+    
     dataframe["FDR"] = pd.to_numeric(dataframe["FDR"], errors='coerce')
 
     dataframe["FDR"] = np.log10(np.add(dataframe["FDR"], 1))
@@ -64,8 +68,8 @@ def go_volcano_plot(dataframe, go_type):
 
 molF_plot = go_enrichment_plot(molF, "Molecular Function")
 
-#bioP_plot = go_plot(bioP, "Biological Process") # major overplotting issues
-#bioP_volcano = go_volcano_plot(bioP, "Biological Process")
+bioP_plot = go_enrichment_plot(bioP, "Biological Process", 50) # major overplotting issues, so select bottom 50 enrichment scores (many genes express this process)
+bioP_volcano = go_volcano_plot(bioP, "Biological Process")
 
 celC_plot = go_enrichment_plot(celC, "Cellular Component")
 
