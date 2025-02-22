@@ -5,11 +5,13 @@ library(httr2)
 library(jsonlite)
 library(stringr)
 library(purrr)
+library(clusterProfiler)
+library(org.Hs.eg.db)
 
 ## Read Variant and Gene Data
 var_data <- read_xlsx("neuroprotective_variants.xlsx", sheet = "compiled variants")
-snps <- var_data %>% select(rsid) %>% distinct() %>% drop_na() %>% as.vector()
-genes <- var_data %>% select(gene) %>% distinct() %>% drop_na() %>% as.vector()
+snps <- var_data %>% dplyr::select(rsid) %>% distinct() %>% drop_na() %>% as.vector()
+genes <- var_data %>% dplyr::select(gene) %>% distinct() %>% drop_na() %>% as.vector()
 
 ## Ensembl
 
@@ -155,13 +157,32 @@ panther_cc <- panther_api(genes, "GO%3A0005575")
 panther_mf <- panther_api(genes, "GO%3A0003674")
 
 parse_panther <- function(panther_json) {
+  results <- panther_json$results$result
   
+  panther_df <- map_dfr(results, ~tibble(
+    term_id = .x$term$id,
+    term_label = .x$term$label,
+    num_genes = .x$number_in_list,
+    fold_enrichment = .x$fold_enrichment,
+    fdr = .x$fdr,
+    pvalue = .x$pValue
+  )) %>% filter(num_genes >= 1)
   
+  return(panther_df)
 }
+
+mf_df <- parse_panther(panther_mf)
+bp_df <- parse_panther(panther_bp)
+cc_df <- parse_panther(panther_cc)
 
 ## KEGG
 
+## step for tomorrow 2/22:
+## write a helper function to normalize gene ids to HGNC. First start with rsid matches
+## then go to Alias matches to HGNC
+## perhaps undo what you did to the xlsx file and start from scratch
 
+kegg_g <- bitr(unlist(genes), fromType="SYMBOL", toType="ENTREZID", OrgDb="org.Hs.eg.db", drop = FALSE)
 
 
 
