@@ -180,7 +180,7 @@ omim_api <- function(genes, api_key) {
   return(responses)
 }
 
-parse_omim <- function(omim_json) {
+parse_omim <- function(omim_json, session) {
   # parse json
   omim_df <- map_dfr(names(omim_json), function(i) {
     entries <- omim_json[[i]]$omim$searchResponse$clinicalSynopsisList
@@ -193,6 +193,11 @@ parse_omim <- function(omim_json) {
       )
     })
   })
+  
+  if (nrow(omim_df) == 0) {
+    updateProgressBar(session, id = "get_omim", value = 0)
+    stop("No mapped diseases found.")
+  }
   
   return(omim_df)
 }
@@ -303,7 +308,7 @@ parse_gsea <- function(gsea_json) {
   return(gsea_df)
 }
 
-hierarchy <- function(gsea_df, k) {
+hierarchy <- function(gsea_df, k, n_plot) {
   if ("odds_ratio" %in% colnames(gsea_df)) {
     sets <- gsea_df %>%
       filter(corrected_pvalue < 0.05) %>%
@@ -330,12 +335,13 @@ hierarchy <- function(gsea_df, k) {
     set("labels_cex", 0.5)
   
   # plot entire dendrogram
-  dend_plot <- as.ggdend(dend)
-  
-  j <- ggplot(dend_plot, labels = FALSE) + 
-    theme_void()
-  
-  plot(j)
+  if (n_plot == 0) {
+    dend_plot <- as.ggdend(dend)
+    
+    j <- ggplot(dend_plot, labels = FALSE) + 
+      theme_void()
+    print(j)
+  }
   
   # assign each path of tree to k clusters
   clusters <- cutree(dend, k=k)
@@ -350,34 +356,57 @@ hierarchy <- function(gsea_df, k) {
   sub.trees <- cut(dend, h = height, k = k)
   
   n_cuts <- length(sub.trees$lower)
-
-  # Select lower clusters and plot
-  if (length(sub.trees$lower) > 0) {
-    for (i in 1:n_cuts) {
-      cluster_k <- sub.trees$lower[[i]]
-      
-      # If the subtree has more than 50 leaves, remove labels
-      if (length(labels(cluster_k)) > 50) {
-        cluster_k <- cluster_k %>% set("labels", NULL)
-      }
-      
-      # Convert to ggdend object safely
-      cluster_k <- tryCatch({
-        as.ggdend(cluster_k)
-      }, error = function(e) {
-        message("Skipping invalid subtree. Try a smaller value of k: ", e$message)
-        return(NULL)
-      })
-      
-      # Skip if conversion failed
-      if (is.null(cluster_k)) next
-      
-      p <- ggplot(cluster_k, horiz = TRUE) +
-        theme_void()
-      
-      plot(p)
-    }
-  }
-  return(sets)
   
+  if (n_plot > k) {
+    stop("Invalid plot index. Select 0-k.")
+  } 
+  else if (n_plot > 0) {
+    cluster_k <- sub.trees$lower[[n_plot]]
+    
+    # If the subtree has more than 50 leaves, remove labels
+    if (length(labels(cluster_k)) > 50) {
+      cluster_k <- cluster_k %>% set("labels", NULL)
+    }
+    
+    # Convert to ggdend object safely
+    cluster_k <- tryCatch({
+      as.ggdend(cluster_k)
+    }, error = function(e) {
+      warning("Skipping invalid subtree. Try a smaller value of k: ", e$message)
+      return(NULL)
+    })
+    p <- ggplot(cluster_k, horiz = TRUE) +
+      theme_void()
+    
+    print(p)
+    
+  }
+
+  # # Select lower clusters and plot
+  # if (length(sub.trees$lower) > 0) {
+  #   for (i in 1:n_cuts) {
+  #     cluster_k <- sub.trees$lower[[i]]
+  #     
+  #     # If the subtree has more than 50 leaves, remove labels
+  #     if (length(labels(cluster_k)) > 50) {
+  #       cluster_k <- cluster_k %>% set("labels", NULL)
+  #     }
+  #     
+  #     # Convert to ggdend object safely
+  #     cluster_k <- tryCatch({
+  #       as.ggdend(cluster_k)
+  #     }, error = function(e) {
+  #       message("Skipping invalid subtree. Try a smaller value of k: ", e$message)
+  #       return(NULL)
+  #     })
+  #     
+  #     # Skip if conversion failed
+  #     if (is.null(cluster_k)) next
+  #     
+  #     p <- ggplot(cluster_k, horiz = TRUE) +
+  #       theme_void()
+  #     
+  #     plot(p)
+  #   }}
+  return(gsea_df)
 }
