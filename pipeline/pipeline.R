@@ -1,16 +1,10 @@
 library(tidyverse)
-library(tidyr)
 library(readxl)
 library(httr2)
 library(jsonlite)
-library(stringr)
 library(purrr)
-library(clusterProfiler)
-library(org.Hs.eg.db)
-library(biomaRt)
-library(DOSE)
-library(enrichplot)
 library(ggupset)
+library(dendextend)
 
 ## Read Variant and Gene Data
 var_data <- read_xlsx("neuroprotective_variants.xlsx", sheet = "compiled variants")
@@ -18,71 +12,90 @@ snps <- var_data %>% dplyr::select(rsid) %>% distinct() %>% drop_na() %>% as.vec
 genes <- var_data %>% dplyr::select(gene) %>% distinct() %>% drop_na() %>% as.vector()
 
 ### Normalize Gene Identifiers
-normalize_genes_hgnc <- function(genes) {
+normalize_genes <- function(genes) {
   genes_vec <- unlist(genes)
   len <- length(genes_vec)
   genes_string <- paste(genes_vec, collapse = "+OR+")
-  
+
   base_url <- "https://clinicaltables.nlm.nih.gov"
-  hgnc_query <- sprintf("/api/genes/v4/search?terms=%s&df=hgnc_id,symbol,name,alias_symbol,location&maxList=%s", genes_string, len*2)
-  
+  hgnc_query <- sprintf("/api/genes/v4/search?terms=%s&df=hgnc_id,hgnc_id_num,symbol,name,alias_symbol,location&maxList=%s&count=%s", genes_string, 500, 500)
+
   get_hgnc <- request(base_url) |>
       req_url_path(path = hgnc_query) |>
+       req_headers(accept = "application/json")|>
       req_method("GET")
 
   resp_hgnc <- req_perform(get_hgnc) |>
     resp_body_json()
-  
+
   gene_df <- map_dfr(resp_hgnc[[4]], ~tibble(
           hgnc_id = as.character(.x[1]),
-          symbol = as.character(.x[2]),
-          name = as.character(.x[3]),
-          alias_symbol = as.character(.x[4]),
-          location = as.character(.x[5])
+          hgnc_id_num = as.numeric(.x[2]),
+          symbol = as.character(.x[3]),
+          name = as.character(.x[4]),
+          alias_symbol = as.character(.x[5]),
+          location = as.character(.x[6])
         )) %>% mutate(search_term = NA_character_)
 
+  # return matches 
   for (i in seq_along(gene_df$symbol)) {
-    # iterate over columns
+    matched_terms <- c()
     for (column in c("symbol", "alias_symbol", "name")) {
       for (term in genes_vec) {
-        # extract matching term
         match <- str_extract(gene_df[[column]][i], fixed(term, ignore_case = TRUE))
         if (!is.na(match)) {
-          gene_df$search_term[i] <- match
-          break  # exit loop once match is found
+          matched_terms <- c(matched_terms, term)
         }
       }
-      if (!is.na(gene_df$search_term[i])) break # stop further checks
+    }
+    if (length(matched_terms) > 0) {
+      gene_df$search_term[i] <- paste(unique(matched_terms), collapse = "|")
     }
   }
+  
+  hgnc_genes <- paste(gene_df$symbol, collapse = "+OR+")
+  ncbi_query <- sprintf("/api/ncbi_genes/v3/search?terms=%s&df=GeneID,HGNC_ID&maxList=%s&count=%s", hgnc_genes, 500, 500)
 
-  gene_df <- gene_df %>%
-    filter(!is.na(search_term))
+  # request ncbi gene_ids
+  get_ncbi <- request(base_url) |>
+    req_url_path(path = ncbi_query) |>
+    req_headers(accept = "application/json")|>
+    req_method("GET")
 
-  # mapped genes
-  mapped_genes <- unique(gene_df$search_term)
-  n_mapped <- length(mapped_genes)
-  missing_genes <- genes_vec %>%
-    setdiff(mapped_genes)
-  n_missing <- length(missing_genes)
+  resp_ncbi <- req_perform(get_ncbi) |>
+    resp_body_json()
 
-  # missing genes
-  if (n_missing > 0) {
-    missing_genes_str <- paste(missing_genes, collapse = ", ")
-    warning(sprintf("%.2f%% of gene symbols are unmapped.\nUnmapped genes are: %s\nCheck spelling; HUGO nomenclature preferred.",
-                    (n_missing/len) * 100, missing_genes_str))
-  }
-  else {
+  ncbi_ids <- map_dfr(resp_ncbi[[4]], ~tibble(
+     ncbi_id = as.numeric(.x[1]),
+     HGNC_ID = as.character(.x[2])))
+
+   gene_df <- gene_df %>%
+     filter(!is.na(search_term)) %>%
+     left_join(ncbi_ids, by = join_by(hgnc_id == HGNC_ID))
+
+  # # mapped genes
+   mapped_genes <- unique(unlist(str_split(gene_df$search_term, "\\|")))
+   n_mapped <- length(mapped_genes)
+   missing_genes <- setdiff(genes_vec, mapped_genes)
+   n_missing <- length(missing_genes)
+
+  # # missing genes
+   if (n_missing > 0) {
+     missing_genes_str <- paste(missing_genes, collapse = ", ")
+     warning(sprintf("%.2f%% of gene symbols are unmapped.\nUnmapped genes are: %s\nCheck spelling; HUGO nomenclature preferred.",
+                     (n_missing/len) * 100, missing_genes_str))
+   }
+   else {
     cat(sprintf("Mapped %.2f%% of gene symbols.", (n_mapped/len) * 100))
-  }
+   }
 
   return(gene_df)
 }
 
-hgnc <- normalize_genes_hgnc(genes)
+hgnc <- normalize_genes(genes)
+genes <- hgnc$symbol
 
 ## Ensembl
-
 
 ## variant effect prediction
 ensembl_api <- function(snps) {
@@ -183,8 +196,6 @@ parse_omim <- function(omim_json) {
   return(omim_df)
 }
 
-genes <- hgnc$symbol
-
 ct <- omim_api(genes, api_key)
 omim_df <- parse_omim(ct)
 
@@ -258,47 +269,179 @@ cc_df <- parse_panther(panther_cc)
 
 ## KEGG
 
-## step for tomorrow 2/22:
-## write a helper function to normalize gene ids to HGNC. First start with rsid matches
-## then go to Alias matches to HGNC
-## perhaps undo what you did to the xlsx file and start from scratch
 
-## Genes to Entrez IDs for KEGG
+## Gene Set Enrichment
+gsea <- function(genes, ontology) {
+  
+  if (!ontology %in% c("MF", "BP", "CC", "MP", "PW", "CHEBI", "RDO")) {
+    stop("Improper ontology annotation type.\nOptions are:\nBP (GO biological process)\nCC (GO cellular components)\nMF (GO molecular functions)\nMP (Human Phenotype Ontology)\nRDO (Disease Ontology)\nPW (Pathway Ontology)\nCHEBI (Chemical Entities of Biological Interest)")
+  }
+  
+  query <- list(
+    species = 1,
+    genes = genes,
+    aspect = sprintf("%s", ontology),
+    originalSpecies = 1
+  )
+  
+  base_url <- "https://rest.rgd.mcw.edu"
+  ext <- "/rgdws/enrichment/data"
+  
+  post_gsea <- request(base_url) |>
+    req_url_path(path = ext) |>
+    req_headers(accept = "application/json",
+                `Content-Type`="application/json") |>
+    req_body_json(query) |>
+    req_method("POST")
+  
+  resp_gsea <- req_perform(post_gsea) |>
+    resp_body_json()
+  
+  return(resp_gsea)
+}
+
+parse_gsea <- function(gsea_json) {
+  results <- gsea_json$enrichment
+  
+  gsea_df <- map_dfr(results, ~tibble(
+    term_id = as.character(.x$acc),
+    term = as.character(.x$term),
+    genes = as.numeric(.x$count),
+    ref_genes = as.numeric(.x$refCount),
+    odds_ratio = as.numeric(.x$oddsratio),
+    corrected_pvalue = as.numeric(.x$correctedpvalue),
+    pvalue = as.numeric(.x$pvalue)
+  )) %>% filter(genes >= 1)
+  
+  return(gsea_df)
+}
+
+ontology = "RDO"
+
+g <- gsea(genes, ontology)
+
+g_df <- parse_gsea(g)
+
+hierarchy <- function(gsea_df, k) {
+  if ("odds_ratio" %in% colnames(gsea_df)) {
+    sets <- gsea_df %>%
+      filter(corrected_pvalue < 0.05) %>%
+      select(term, odds_ratio) %>%
+      mutate(scaled = log(odds_ratio + 1))
+  }
+  else if ("fold_enrichment" %in% colnames(gsea_df)) {
+    sets <- gsea_df %>%
+      filter(pvalue < 0.05) %>%
+      select(term_label, fold_enrichment) %>%
+      mutate(scaled = log(fold_enrichment + 1), 
+             term = term_label) %>%
+      select(-term_label)
+  }
+  
+  dist_matrix <- dist(sets$scaled, method = "euclidean")
+  
+  hc <- hclust(dist_matrix, method = "complete")
+  
+  dend <- as.dendrogram(hc) %>%
+    set("labels", sets$term) %>%
+    set("branches_k_color", k=k) %>%
+    color_labels(k = k) %>% 
+    set("labels_cex", 0.5)
+  
+  # plot entire dendrogram
+  dend_plot <- as.ggdend(dend)
+  
+  j <- ggplot(dend_plot, labels = FALSE) + 
+    theme_void()
+  
+  plot(j)
+  
+  # assign each path of tree to k clusters
+  clusters <- cutree(dend, k=k)
+  
+  # add clusters to sets
+  sets$cluster <- clusters
+  
+  # height to split graph into k components
+  height = as.vector(heights_per_k.dendrogram(dend))[[k]]
+  
+  # cut trees to expose leaf terms
+  sub.trees <- cut(dend, h = height, k = k)
+  
+  n_cuts <- length(sub.trees$lower)
+
+  # Select lower clusters and plot
+  if (length(sub.trees$lower) > 0) {
+    for (i in 1:n_cuts) {
+      cluster_k <- sub.trees$lower[[i]]
+      
+      # If the subtree has more than 50 leaves, remove labels
+      if (length(labels(cluster_k)) > 50) {
+        cluster_k <- cluster_k %>% set("labels", NULL)
+      }
+      
+      # Convert to ggdend object safely
+      cluster_k <- tryCatch({
+        as.ggdend(cluster_k)
+      }, error = function(e) {
+        message("Skipping invalid subtree. Try a smaller value of k: ", e$message)
+        return(NULL)
+      })
+      
+      # Skip if conversion failed
+      if (is.null(cluster_k)) next
+      
+      p <- ggplot(cluster_k, horiz = TRUE) +
+        theme_void()
+      
+      plot(p)
+    }
+  }
+  return(sets)
+  
+}
+
+h_plots <- hierarchy(g_df, 4)
+
+h_plot2 <- hierarchy(mf_df, 10)
 
 
-## Steps for 2/23:
-## Can you write your own code for enrichment analysis of MONDO and HPO?
-# Maybe just use this: https://rgd.mcw.edu/wg/new-moet-algorithm/
+## Trash pile
 
-
-
-entrez_ids <-  bitr(genes, fromType="SYMBOL", toType="ENTREZID", OrgDb="org.Hs.eg.db")
-
-kk <- enrichKEGG(gene         = entrez_ids$ENTREZID,
-                 organism     = 'hsa',
-                 pvalueCutoff = 0.05)
-
-edo <- enrichDO(entrez_ids$ENTREZID)
-edox <- setReadable(edo, 'org.Hs.eg.db', 'ENTREZID')
-p1 <- cnetplot(edox,  categorySize="geneNum", layout = "circle")
-plot(p1)
-
-edox2 <- pairwise_termsim(edox)
-p2 <- treeplot(edox2)
-plot(p2)
-
-p3 <- upsetplot(edo)
-plot(p3)
-
-## API for HPO and DO enrichment
-"https://rest.rgd.mcw.edu/rgdws/enrichment/data"
-
-# MP is phenotype
-# MF is molecular function
-# RDO is rat disease ontology
-# worth a shot to write this code yourself for MONDO and HPO?
-
-# {"species":1,"genes":["BACE1","PTGS2","PACERR","SORL1","TOMM40P3","TOMM40P4","MEF2C-AS2","TOMM40P1","TOMM40P2","MEF2C-AS1","CD33","COX15","EPHA1","SAR1AP1","LRRK2-DT","CELF2-DT","CELF2-AS2","COX10-DT","WASHC5-AS1","SAR1A","BACE1-AS","PIN1-DT","CD36","SOD1-DT","FN1-DT","CELF2-AS1","KANSL1-AS1","DAPK1-IT1","EPHA1-AS1","SORL1-AS1","CIZ1","LRP1-AS","NQO1-DT","DSG2-AS1","ECE1-AS1","IL6-AS1","TRIL","BCCIP","COX10","SAR1AP2","SAR1AP3","SAR1AP4","ADAM10","A2M-AS1","IL10RB-DT","ADAM9","RCOR1","NME8","PANDAR","BNAT1","IL6ST-DT","APP-DT","SOD2-OT1","COX20","ABCA1","HBG2","IL10","IL33","MS4A2","NEDD9","NYAP1","P2RX7","PICALM","PLCG2","PPIAP10","BIN1","TNF","TOMM40","CYP46A1","EGFR","CLU","COMT","ACE","ADAMTS1","ADRA2B","FN1","GAB2","HMGCR","KANSL1","LCORL","LRRK2","MAPT","MTHFR","NQO1","TFCP2","CELF2","ECE1","EXOC3L2","HSPA1A","IL6","LRP11","APOE","ARC","MEF2C","PILRA","PILRB","PON1","PRNP","PTK2B","RBM45","SERPINA3","CCL11","SPI1","TFAM","TREML2","CDK5RAP2","CDKN1A","CHAT","DAPK1","HFE","IDE","IL16","INPP5D","KL","LPL","MS4A6A","NCSTN","NLRP13","NTF3","PLAU","REST","TCN2","TLR4","VAMP1","ZCWPW1","CCR2","CDPF1","CRP","CYP19A1","DSG2","ESR1","ESR2","F5","A2M","ABCA7","GAPDHS","IQCK","LDLR","LRP1","APP","NFIC","NOCT","NRXN3","PIN1","PPP4R3A","PSEN1","RAB10","BCKDK","RELN","RIN3","SLC11A2","SLC24A4","SOD1","CASP7","CASS4","SPPL2A","TMEM106B","TNK1","WASHC5","CETP","CHI3L1","CHRNB2","CYP2C19","KANSL1L-AS1","IL6R-AS1","COX20P2","RCOR2","RCOR3","BACE2","EGFR-AS1","LDLR-AS1","MAPT-IT1","HFE-AS1","MAPT-AS1","ACE2-DT","PIMREG","APTR","IQCF5","SLC35F5","EGILA","TSPOAP1-AS1","ADAMTS19-AS1","LITAF","IGHA2","ADAMTS10","CLUH","TRAP1","ADGRF5","LTA","LTB"],"aspect":"MP","originalSpecies":1}
+## Hierarchical clustering
+# sets <- g_df %>%
+#   dplyr::filter(corrected_pvalue < 0.05) %>%
+#   dplyr::select(term, odds_ratio) %>%
+#   mutate(scaled_or = log(odds_ratio + 1))
+# 
+# rownames(sets) <- sets$term
+# 
+# dist_matrix <- dist(sets$scaled_or, method = "euclidean")
+# 
+# hc <- hclust(dist_matrix, method = "complete")
+# 
+# plot(hc)
+# 
+# dend <- as.dendrogram(hc) %>%
+#   set("labels", sets$term)
+# 
+# 
+# plot(dend, leaflab = "none")
+# 
+# clusters <- cutree(dend, k=5)
+# sets$cluster <- clusters
+# 
+# tail(sets, 10)
+# 
+# plot(color_branches(dend, k=5),leaflab="none")
+# sub.trees <- cut(dend, h = 1)
+# 
+# cluster1.tree <- sub.trees$lower[[2]]
+# 
+# cluster1.tree  %>%
+#   set("labels_cex", 0.5) %>%
+#   set("labels_col", "tomato") %>%
+#   plot(horiz = TRUE)  # plot horizontally
 
 
 ## Trash pile
@@ -315,3 +458,55 @@ plot(p3)
 #   matches = .x$entry$matches,
 #   phenotype = .x$entry$phenotypeMapList$phenotypeMap
 # ))
+# entrez_ids <-  bitr(genes, fromType="SYMBOL", toType="ENTREZID", OrgDb="org.Hs.eg.db")
+# 
+# kk <- enrichKEGG(gene         = entrez_ids$ENTREZID,
+#                  organism     = 'hsa',
+#                  pvalueCutoff = 0.05)
+# 
+# edo <- enrichDO(entrez_ids$ENTREZID)
+# edox <- setReadable(edo, 'org.Hs.eg.db', 'ENTREZID')
+# p1 <- cnetplot(edox,  categorySize="geneNum", layout = "circle")
+# plot(p1)
+# 
+# edox2 <- pairwise_termsim(edox)
+# p2 <- treeplot(edox2)
+# plot(p2)
+# 
+# p3 <- upsetplot(edo)
+# plot(p3)
+
+# normalize_genes <- function(genes) {
+#   genes_vec <- unlist(genes)
+#   len <- length(genes_vec)
+#   genes_string <- paste(genes_vec, collapse = "+OR+")
+# 
+#   base_url <- "https://rest.genenames.org"
+#   hgnc_query <- sprintf("/search/symbol:%s", genes_string)
+# 
+#   get_hgnc <- request(base_url) |>
+#       req_url_path(path = hgnc_query) |>
+#       req_headers(accept = "application/json") |>
+#       req_method("GET")
+# 
+#   resp_hgnc <- req_perform(get_hgnc) |>
+#     resp_body_json()
+# 
+#   gene_df <- map_dfr(resp_hgnc$response$docs, ~tibble(
+#           symbol = as.character(.x[1]),
+#           hgnc_id = as.character(.x[2]),
+#           score = as.numeric(.x[3])))
+#   
+#   return(gene_df)
+# }
+# 
+# new <- normalize_genes(genes)
+# library(clusterProfiler)
+# library(org.Hs.eg.db)
+# library(biomaRt)
+# library(DOSE)
+# library(enrichplot)
+# prompt user to pick appropriate k
+# if (n_clusters < k) {
+#   warning(sprintf("Number of clusters assigned by hclust is less than k\n. Number of clusters: %s\nPlease set k <= %s.", n_clusters, n_clusters))
+# }
