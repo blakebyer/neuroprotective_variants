@@ -5,6 +5,7 @@ library(jsonlite)
 library(purrr)
 library(ggupset)
 library(dendextend)
+library(shinyhttr)
 
 # ## Read Variant and Gene Data
 # var_data <- read_xlsx("neuroprotective_variants.xlsx", sheet = "compiled variants")
@@ -207,16 +208,16 @@ parse_omim <- function(omim_json) {
 # "label": "cellular_component"
 
 panther_api <- function(genes, annotation) {
-  if (str_detect(annotation, ":")) {
-    annotation = str_replace(annotation, ":", "%")
-  }
-  else if (annotation == "GO%3A0008150") {
+  if (annotation == "BP") {
+    type <- "GO%3A0008150"
     cat("Returning biological processes...")
   }
-  else if (annotation == "GO%3A0005575") {
+  else if (annotation == "CC") {
+    type <- "GO%3A0005575"
     cat("Returning cellular components...")
   }
-  else if (annotation == "GO%3A0003674") {
+  else if (annotation == "MF") {
+    type <- "GO%3A0003674"
     cat("Returning molecular functions...")
   }
   else {
@@ -226,13 +227,14 @@ panther_api <- function(genes, annotation) {
   
   # Define base and query url
   base_url <- "https://www.pantherdb.org"
-  query_url <- sprintf("/services/oai/pantherdb/enrich/overrep?geneInputList=%s&organism=9606&annotDataSet=%s&enrichmentTestType=FISHER&correction=FDR", genes, annotation)
+  query_url <- sprintf("/services/oai/pantherdb/enrich/overrep?geneInputList=%s&organism=9606&annotDataSet=%s&enrichmentTestType=FISHER&correction=FDR", genes, type)
   
   # Make an HTTP request
   post_panther <- request(base_url) |>
     req_url_path(path = query_url) |>
     req_headers(accept = "application/json") |>
-    req_method("POST")
+    req_method("POST") |>
+    req_progress(type = "down")
 
   resp_panther <- req_perform(post_panther) |>
     resp_body_json()
@@ -250,7 +252,7 @@ parse_panther <- function(panther_json) {
     fold_enrichment = .x$fold_enrichment,
     fdr = .x$fdr,
     pvalue = .x$pValue
-  )) %>% filter(num_genes >= 1 && pvalue < 0.05)
+  )) %>% filter(num_genes >= 1, pvalue < 0.05)
   
   return(panther_df)
 }
