@@ -250,7 +250,7 @@ parse_panther <- function(panther_json) {
     fold_enrichment = .x$fold_enrichment,
     fdr = .x$fdr,
     pvalue = .x$pValue
-  )) %>% filter(num_genes >= 1)
+  )) %>% filter(num_genes >= 1 && pvalue < 0.05)
   
   return(panther_df)
 }

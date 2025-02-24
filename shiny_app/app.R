@@ -22,7 +22,8 @@ ui <- fluidPage(
       title = "Visualizations",
       nav_panel("Gene Table", dataTableOutput("hgnc")),
       #nav_panel("GSEA", dataTableOutput("gsea")),
-      nav_panel("OMIM", dataTableOutput("omim"))
+      nav_panel("OMIM", dataTableOutput("omim")),
+      nav_panel("GO", dataTableOutput("go"))
     )
   )
 )
@@ -58,6 +59,15 @@ server <- function(input, output) {
       }                  
     )
   
+  go_annot <- eventReactive(input$submit,
+      {
+        req(normalize())
+        annot <- "GO%3A0008150" # likely a problem here for JSON
+        go <- panther_api(normalize()$symbol, annot)
+        go_df <- tibble(parse_panther(go))
+        return(go_df)
+      })
+  
   output$hgnc <- renderDataTable({
     normalize()
   })
@@ -72,8 +82,13 @@ server <- function(input, output) {
   # })
   
   output$omim <- renderDataTable({
-    req(normalize())
+    req(omim_set())
     omim_set()
+  })
+  
+  output$go <- renderDataTable({
+    req(go_annot())
+    go_annot()
   })
   
 }
