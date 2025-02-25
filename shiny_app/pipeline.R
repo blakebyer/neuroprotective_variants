@@ -6,6 +6,7 @@ library(purrr)
 library(ggupset)
 library(dendextend)
 library(shinyhttr)
+library(furrr)
 
 # ## Read Variant and Gene Data
 # var_data <- read_xlsx("neuroprotective_variants.xlsx", sheet = "compiled variants")
@@ -30,7 +31,7 @@ normalize_genes <- function(genes, session) {
     resp_body_json() 
     
 
-  gene_df <- map_dfr(resp_hgnc[[4]], ~tibble(
+  gene_df <- future_map_dfr(resp_hgnc[[4]], ~tibble(
           hgnc_id = as.character(.x[1]),
           hgnc_id_num = as.numeric(.x[2]),
           symbol = as.character(.x[3]),
@@ -59,7 +60,7 @@ normalize_genes <- function(genes, session) {
       gene_df$search_term[i] <- paste(unique(matched_terms), collapse = "|")
     }
   }
-
+  
   hgnc_genes <- paste(gene_df$symbol, collapse = "+OR+")
   ncbi_query <- sprintf("/api/ncbi_genes/v3/search?terms=%s&df=GeneID,HGNC_ID&maxList=%s&count=%s", hgnc_genes, 500, 500)
 
@@ -72,13 +73,13 @@ normalize_genes <- function(genes, session) {
   resp_ncbi <- req_perform(get_ncbi) |>
     resp_body_json()
 
-  ncbi_ids <- map_dfr(resp_ncbi[[4]], ~tibble(
+  ncbi_ids <- future_map_dfr(resp_ncbi[[4]], ~tibble(
      ncbi_id = as.numeric(.x[1]),
      hgnc_id = as.character(.x[2])))
 
    gene_df <- gene_df %>%
      filter(!is.na(search_term)) %>%
-     left_join(ncbi_ids)
+     left_join(ncbi_ids, by = join_by(hgnc_id))
 
   # # mapped genes
    mapped_genes <- unique(unlist(str_split(gene_df$search_term, "\\|")))
@@ -136,8 +137,6 @@ ensembl_api <- function(snps) {
 }
 
 ## OMIM
-api_key <- "J4eGvqcbQuiOdjflqQQwoQ"
-
 omim_api <- function(genes, api_key) {
   
   # set API key in browser cookies
@@ -177,17 +176,17 @@ omim_api <- function(genes, api_key) {
   # subset genes into requests of 20 to not exceed search complexity
   subsets <- split(genes, ceiling(seq_along(genes) / 20))
 
-  responses <- map(subsets, fetch_omim)
+  responses <- future_map(subsets, fetch_omim)
   
   return(responses)
 }
 
 parse_omim <- function(omim_json, session) {
   # parse json
-  omim_df <- map_dfr(names(omim_json), function(i) {
+  omim_df <- future_map_dfr(names(omim_json), function(i) {
     entries <- omim_json[[i]]$omim$searchResponse$clinicalSynopsisList
     
-    map_dfr(entries, function(entry) {
+    future_map_dfr(entries, function(entry) {
       tibble(
         omim_entry = entry$clinicalSynopsis$mimNumber,
         disease = entry$clinicalSynopsis$preferredTitle,
@@ -253,7 +252,7 @@ panther_api <- function(genes, annotation) {
 parse_panther <- function(panther_json, session) {
   results <- panther_json$results$result
   
-  panther_df <- map_dfr(results, ~tibble(
+  panther_df <- future_map_dfr(results, ~tibble(
     term_id = .x$term$id,
     term_label = .x$term$label,
     num_genes = .x$number_in_list,
@@ -305,7 +304,7 @@ gsea <- function(genes, ontology) {
 parse_gsea <- function(gsea_json, session) {
   results <- gsea_json$enrichment
   
-  gsea_df <- map_dfr(results, ~tibble(
+  gsea_df <- future_map_dfr(results, ~tibble(
     term_id = as.character(.x$acc),
     term = as.character(.x$term),
     genes = as.numeric(.x$count),

@@ -4,6 +4,7 @@ library(shinyWidgets)
 library(bslib)
 library(DT)
 source("pipeline.R")
+source("config.R")
 
 options(shiny.maxRequestSize = 10 * 1024^2) # 10 MB file
 
@@ -25,38 +26,44 @@ ui <- fluidPage(
     ),
     navset_card_pill(
       nav_panel("Gene Table",
-                progressBar(
-                  id = "get_hgnc",
-                  value = 0,
-                  title = "",
-                  display_pct = FALSE,
-                  striped = TRUE
-                ),
+                # progressBar(
+                #   id = "get_hgnc",
+                #   value = 0,
+                #   title = "",
+                #   display_pct = FALSE,
+                #   striped = TRUE
+                # ),
                 span(textOutput("hgnc_warnings"), style="color:red"),
                 DTOutput("hgnc")
                 ),
       nav_panel("OMIM", 
-                progressBar(
-                  id = "get_omim",
-                  value = 0,
-                  title = "",
-                  display_pct = FALSE,
-                  striped = TRUE
-                ),
+                # progressBar(
+                #   id = "get_omim",
+                #   value = 0,
+                #   title = "",
+                #   display_pct = FALSE,
+                #   striped = TRUE
+                # ),
                 DTOutput("omim")
                 ),
       nav_panel("GO", 
-                progressBar(
-                  id = "get_go",
-                  value = 0,
-                  title = "",
-                  display_pct = FALSE,
-                  striped = TRUE
-                ),
+                # progressBar(
+                #   id = "get_go",
+                #   value = 0,
+                #   title = "",
+                #   display_pct = FALSE,
+                #   striped = TRUE
+                # ),
                 fluidRow(
-                  column(4, actionButton("bp_button", "Biological Process", class="btn-primary")),
-                  column(4, actionButton("mf_button", "Molecular Function", class="btn-primary")),
-                  column(4, actionButton("cc_button", "Cellular Component", class="btn-primary"))
+                  column(6, div(style = "display: flex; align-items: center; gap: 10px;",
+                                pickerInput("go_category", "Select GO Category",
+                                            choices = c("Biological Process" = "bp",
+                                                        "Molecular Function" = "mf",
+                                                        "Cellular Component" = "cc"),
+                                            selected = "bp",
+                                            multiple = FALSE),
+                                actionButton("go_button", "Submit")
+                  ))
                 ),
                 h4(textOutput("go_title")),
                 navset_card_tab(
@@ -77,18 +84,24 @@ ui <- fluidPage(
                             plotOutput("go_plot"))
                             )),
       nav_panel("GSEA",
-                progressBar(
-                  id = "get_gsea",
-                  value = 0,
-                  title = "",
-                  display_pct = FALSE,
-                  striped = TRUE
-                ),
+                # progressBar(
+                #   id = "get_gsea",
+                #   value = 0,
+                #   title = "",
+                #   display_pct = FALSE,
+                #   striped = TRUE
+                # ),
                 fluidRow(
-                  column(3, actionButton("do_button", "Disease Ontology", class="btn-primary")),
-                  column(3, actionButton("hpo_button", "Human Phenotype Ontology", class="btn-primary")),
-                  column(3, actionButton("pw_button", "Pathway Ontology", class="btn-primary")),
-                  column(3, actionButton("chebi_button", "CHEBI", class="btn-primary"))
+                  column(6, div(style = "display: flex; align-items: center; gap: 10px;",
+                                pickerInput("onto_category", "Select Ontology",
+                                            choices = c("Disease Ontology" = "RDO",
+                                                        "Human Phenotype Ontology" = "MP",
+                                                        "Pathway Ontology" = "PW",
+                                                        "CHEBI" = "CHEBI"),
+                                            selected = "RDO",
+                                            multiple = FALSE),
+                                actionButton("onto_button", "Submit")
+                  ))
                 ),
                 h4(textOutput("gsea_title")),
       navset_card_tab(
@@ -108,12 +121,14 @@ ui <- fluidPage(
                   ),
                   plotOutput("b_plot"))
         )
-      )
+      ),
+      nav_panel("VEP",
+                )
 )
 )
 )
 
-# Define server logic required to draw a histogram ----
+# Define server logic for gene set enrichment
 server <- function(input, output, session) {
   
   data <- reactive({
@@ -183,24 +198,23 @@ server <- function(input, output, session) {
   selected_annot <- reactiveVal("BP")  # Default annotation is "BP"
   go_title <- reactiveVal("Biological Process")
   
-  # Reset annotation to "BP" on submit
-  observeEvent(input$submit, {
-    selected_annot("BP")
-  })
-  
   # Update annotation type when buttons are clicked
-  observeEvent(input$bp_button, { selected_annot("BP") 
-    go_title("Biological Process")
-    })
-  observeEvent(input$mf_button, { selected_annot("MF") 
-    updateProgressBar(session, id = "get_go", value = 0)
-    go_title("Molecular Function")
-    })
-  observeEvent(input$cc_button, 
-    { selected_annot("CC")
+  observeEvent(input$go_button, {
+    req(input$go_category)  # Ensure a selection exists
+    
+    if (input$go_category == "BP") {
+      selected_annot("BP")
+      go_title("Biological Process")
+    } else if (input$go_category == "MF") {
+      selected_annot("MF")
+      updateProgressBar(session, id = "get_go", value = 0)
+      go_title("Molecular Function")
+    } else if (input$go_category == "CC") {
+      selected_annot("CC")
       updateProgressBar(session, id = "get_go", value = 0)
       go_title("Cellular Component")
-    })
+    }
+  })
   
   # Call Panther API based on selected annotation, triggered by input$submit or selected_annot
   go_annot <- reactive({
@@ -220,28 +234,23 @@ server <- function(input, output, session) {
   selected_onto <- reactiveVal("RDO") 
   gsea_title <- reactiveVal("Disease Ontology")
   
-  # Reset annotation to "RDO" on submit
-  observeEvent(input$submit, {
-    selected_onto("RDO")
-  })
-  
-  # Update annotation type when buttons are clicked
-  observeEvent(input$do_button, { selected_onto("RDO") 
-    gsea_title("Disease Ontology")
-    })
-  observeEvent(input$hpo_button, { selected_onto("MP") 
-    updateProgressBar(session, id = "get_go", value = 0)
-    gsea_title("Human Phenotype Ontology")
-    })
-  
-  observeEvent(input$pw_button, { selected_onto("PW") 
-    updateProgressBar(session, id = "get_go", value = 0)
-    gsea_title("Pathway Ontology")
-  })
-
-  observeEvent(input$chebi_button, { selected_onto("CHEBI") 
-    updateProgressBar(session, id = "get_go", value = 0)
-    gsea_title("Chemical Entities of Biological Interest")
+  observeEvent(input$onto_button, {
+    req(input$onto_category)  # Ensure a selection exists
+    
+    if (input$onto_category == "RDO") {
+      selected_onto("RDO")
+      gsea_title("Disease Ontology")
+    } else if (input$onto_category == "MP") {
+      selected_onto("MP")
+      gsea_title("Human Phenotype Ontology")
+    } else if (input$onto_category == "PW") {
+      selected_onto("PW")
+      gsea_title("Pathway Ontology")
+    }
+    else if (input$onto_category == "CHEBI") {
+      selected_onto("CHEBI")
+      gsea_title("Chemical Entities of Biological Interest")
+    }
   })
   
   gene_set <- reactive(
