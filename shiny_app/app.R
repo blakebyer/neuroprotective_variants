@@ -7,7 +7,7 @@ source("pipeline.R")
 
 options(shiny.maxRequestSize = 10 * 1024^2) # 10 MB file
 
-# Define UI for app that draws a histogram ----
+# Define UI for app that does gene set enrichment
 ui <- fluidPage(
   titlePanel("Shiny GSEA"),
   sidebarLayout(
@@ -20,7 +20,8 @@ ui <- fluidPage(
         resize = 'vertical'
       ),
       fileInput("upload", "Upload a gene list (CSV, TSV, or TXT)", accept = c(".csv", ".tsv", ".txt")),
-      actionButton("submit", "Submit")
+      actionButton("submit", "Submit"),
+      actionButton("reset", "Reset")
     ),
     navset_card_pill(
       nav_panel("Gene Table",
@@ -32,7 +33,7 @@ ui <- fluidPage(
                   striped = TRUE
                 ),
                 span(textOutput("hgnc_warnings"), style="color:red"),
-                dataTableOutput("hgnc")
+                DTOutput("hgnc")
                 ),
       nav_panel("OMIM", 
                 progressBar(
@@ -42,7 +43,7 @@ ui <- fluidPage(
                   display_pct = FALSE,
                   striped = TRUE
                 ),
-                dataTableOutput("omim")
+                DTOutput("omim")
                 ),
       nav_panel("GO", 
                 progressBar(
@@ -58,8 +59,24 @@ ui <- fluidPage(
                   column(4, actionButton("cc_button", "Cellular Component", class="btn-primary"))
                 ),
                 h4(textOutput("go_title")),
-                dataTableOutput("go")),
-      nav_panel("GSEA", 
+                navset_card_tab(
+                  nav_panel("Gene Set",
+                        DTOutput("go")),
+                  nav_panel("Hierarchy",
+                            fluidRow(
+                              column(4, numericInput("go_k", "K Clusters", value = 1, min = 1, max = 100)),
+                              column(4, numericInput("go_n_plot", "Plot Cluster K", value = 0, min = 0, max = 100))
+                            ),
+                            plotOutput("go_hierarchy")),
+                  nav_panel("Bar Plot",
+                            fluidRow(
+                              column(4, sliderInput("go_slice", "Top n:",
+                                                    min = 10, max = 100,
+                                                    value = 10, step = 10))
+                            ),
+                            plotOutput("go_plot"))
+                            )),
+      nav_panel("GSEA",
                 progressBar(
                   id = "get_gsea",
                   value = 0,
@@ -74,23 +91,26 @@ ui <- fluidPage(
                   column(3, actionButton("chebi_button", "CHEBI", class="btn-primary"))
                 ),
                 h4(textOutput("gsea_title")),
-                dataTableOutput("gsea")),
-      nav_panel("Hierarchy",
-                progressBar(
-                  id = "get_hierarchy",
-                  value = 0,
-                  title = "",
-                  display_pct = FALSE,
-                  striped = TRUE
-                ),
-                fluidRow(
-                  column(4, numericInput("k", "K Clusters", value = 1, min = 1, max = 100)),
-                  column(4, numericInput("n_plot", "Plot Cluster K", value = 0, min = 0, max = 100))
-                ),
-                plotOutput("hierarchy")
-                )
-    )
-  )
+      navset_card_tab(
+        nav_panel("Gene Set",
+          DTOutput("gsea")),
+        nav_panel("Hierarchy",
+                  fluidRow(
+                    column(4, numericInput("k", "K Clusters", value = 1, min = 1, max = 100)),
+                    column(4, numericInput("n_plot", "Plot Cluster K", value = 0, min = 0, max = 100))
+                  ),
+                  plotOutput("hierarchy")),
+        nav_panel("Bar Plot",
+                  fluidRow(
+                    column(4, sliderInput("slice", "Top n:",
+                                          min = 10, max = 100,
+                                          value = 10, step = 10))
+                  ),
+                  plotOutput("b_plot"))
+        )
+      )
+)
+)
 )
 
 # Define server logic required to draw a histogram ----
@@ -104,7 +124,7 @@ server <- function(input, output, session) {
            csv = vroom::vroom(input$upload$datapath, delim = ","),
            tsv = vroom::vroom(input$upload$datapath, delim = "\t"),
            txt = vroom::vroom(input$upload$datapath, delim = "\n"),
-           validate("Invalid file; Please upload a .csv or .tsv file")
+           validate("Invalid file; Please upload a .csv, .tsv, or .txt file")
     )
   })
   
@@ -115,7 +135,7 @@ server <- function(input, output, session) {
       updateProgressBar(session, id = "get_hgnc", value = 25)
       genes <- NULL
       if (!is.null(input$text) && nzchar(input$text)) {
-        genes <- strsplit(input$text, "[,\t\n]+")
+        genes <- strsplit(trimws(input$text), "[,\t\n]+")
       }
       
       # Handle file upload
@@ -128,7 +148,7 @@ server <- function(input, output, session) {
       
       warnings <- NULL
       gene_df <- withCallingHandlers(
-        tibble(normalize_genes(genes)),
+        tibble(normalize_genes(genes, session)),
         warning = function(w) {
           warnings <<- c(warnings, conditionMessage(w))
           invokeRestart("muffleWarning") # Prevents the warning from printing to the console
@@ -191,15 +211,11 @@ server <- function(input, output, session) {
     updateProgressBar(session, id = "get_go", value = 25)
     go <- panther_api(genes, annot)
     updateProgressBar(session, id = "get_go", value = 65)
-    go_df <- tibble(parse_panther(go))
+    go_df <- tibble(parse_panther(go, session))
     updateProgressBar(session, id = "get_go", value = 100)
     
     return(go_df)
   })
-  
-  # observeEvent(go_annot(),{
-  #   hide("get_go")
-  # })
   
   selected_onto <- reactiveVal("RDO") 
   gsea_title <- reactiveVal("Disease Ontology")
@@ -236,33 +252,52 @@ server <- function(input, output, session) {
       onto <- selected_onto()
       gs <- gsea(genes, onto)
       updateProgressBar(session, id = "get_gsea", value = 65)
-      set <- parse_gsea(gs)
+      set <- parse_gsea(gs, session)
       updateProgressBar(session, id = "get_gsea", value = 100)
       return(set)
     }
   )
   
-  output$hierarchy <- renderPlot({
-    hierarchy(gene_set(), input$k, input$n_plot) 
+  observeEvent(input$k, {
+    updateNumericInput(session, "n_plot", max = input$k)
   })
   
-  output$hgnc <- renderDataTable({
+  observeEvent(input$go_k, {
+    updateNumericInput(session, "go_n_plot", max = input$go_k)
+  })
+  
+  observeEvent(gene_set(),
+      {
+      if (!is.null(gene_set()) && length(gene_set()) > 0) {
+        max_clusters <- max(1, length(gene_set()) - 1)
+        updateNumericInput(session, "k", max = max_clusters)
+      }         
+  })
+  
+  observeEvent(go_annot(),
+     {
+       if (!is.null(go_annot()) && length(go_annot()) > 0) {
+         max_go_clusters <- max(1, length(go_annot()) - 1)
+         updateNumericInput(session, "go_k", max = max_go_clusters)
+       }         
+     })
+  
+  output$hgnc <- DT::renderDT({
     req(normalize())
     normalize()$data
   })
   
-  output$omim <- renderDataTable({
+  output$omim <- DT::renderDT({
     req(omim_set())
     omim_set()
   })
-  
   
   output$go_title <- renderText({
     req(go_annot())
     go_title()
   })
   
-  output$go <- renderDataTable({
+  output$go <- DT::renderDT({
     req(go_annot())
     go_annot()
   })
@@ -272,9 +307,29 @@ server <- function(input, output, session) {
     gsea_title()
   })
   
-  output$gsea <- renderDataTable({
+  output$gsea <- DT::renderDT({
     req(gene_set())
     gene_set()
+  })
+  
+  output$hierarchy <- renderPlot({
+    req(gene_set())
+    hierarchy(gene_set(), input$k, input$n_plot) 
+  })
+  
+  output$go_hierarchy <- renderPlot({
+    req(go_annot())
+    hierarchy(go_annot(), input$go_k, input$go_n_plot) 
+  })
+  
+  output$b_plot <- renderPlot({
+    req(gene_set())
+    panther_plot(gene_set(), input$slice) 
+  })
+  
+  output$go_plot <- renderPlot({
+    req(go_annot())
+    panther_plot(go_annot(), input$go_slice) 
   })
   
 }
