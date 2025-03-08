@@ -7,8 +7,9 @@ library(ggupset)
 library(dendextend)
 library(shinyhttr)
 library(furrr)
+library(rstatix)
 
-# ## Read Variant and Gene Data
+# # ## Read Variant and Gene Data
 # var_data <- read_xlsx("neuroprotective_variants.xlsx", sheet = "compiled variants")
 # snps <- var_data %>% dplyr::select(rsid) %>% distinct() %>% drop_na() %>% as.vector()
 # genes <- var_data %>% dplyr::select(gene) %>% distinct() %>% drop_na() %>% as.vector()
@@ -103,7 +104,7 @@ normalize_genes <- function(genes, session) {
 ## Ensembl
 
 ## variant effect prediction
-ensembl_api <- function(snps) {
+ensembl_vep <- function(snps) {
   
   base_url <- "https://rest.ensembl.org"
   ext <- "/vep/human/id"
@@ -112,11 +113,19 @@ ensembl_api <- function(snps) {
   # Make an HTTP request
   post_vep <- request(base_url) |>
     req_url_path(path = ext) |>
+    req_url_query(
+      AlphaMissense = 1,
+      OpenTargets = 1,
+      CADD = 1,
+      ClinPred = 1,
+      REVEL = 1,
+      BayesDel = 1,
+      per_gene = 1 # most severe consequence per gene
+    ) |>
     req_headers(accept = "application/json",
                 `Content-Type` = "application/json") |>
     req_body_json(snps) |>
     req_method("POST") |>
-    req_throttle(45/60) |>
     req_retry()
   
   # perform request
@@ -135,6 +144,146 @@ ensembl_api <- function(snps) {
     return(resp)
   }
 }
+
+# e <- ensembl_vep(snps)
+
+ensembl_var <- function(snps) {
+  base_url <- "https://rest.ensembl.org"
+  ext <- "/variation/human/"
+  snps <- as.list(snps) %>% setNames("ids")
+  
+  # Make an HTTP request
+  post_var <- request(base_url) |>
+    req_url_path(path = ext) |>
+    req_url_query(
+      phenotypes = 1,
+      pops = 1,
+      population_genotypes = 1
+    ) |>
+    req_headers(accept = "application/json",
+                `Content-Type` = "application/json") |>
+    req_body_json(snps) |>
+    req_method("POST")
+  
+  # perform request
+  resp <- req_perform(post_var) |>
+    resp_body_json()
+  
+  return(resp)
+}
+
+# e2 <- ensembl_var(snps)
+
+parse_ensembl <- function(vep) {
+  
+  vep_df <- future_map_dfr(vep, ~tibble(
+    id = as.character(.x$id %||% NA_character_),
+    consequence = as.character(.x$most_severe_consequence %||% NA_character_),
+    allele = as.character(.x$allele_string %||% NA_character_),
+    cadd = as.numeric(.x$transcript_consequences[[1]]$cadd_raw %||% NA),
+    gene_id = as.character(.x$transcript_consequences[[1]]$hgnc_id %||% NA_character_),
+    sift = as.numeric(.x$transcript_consequences[[1]]$sift_score %||% NA),
+    sift_pred = as.character(.x$transcript_consequences[[1]]$sift_prediction %||% NA_character_),
+    gene_symbol = as.character(.x$transcript_consequences[[1]]$gene_symbol %||% NA_character_),
+    var_allele = as.character(.x$transcript_consequences[[1]]$variant_allele %||% NA_character_),
+    impact = as.character(.x$transcript_consequences[[1]]$impact %||% NA_character_),
+    clinpred = as.numeric(.x$transcript_consequences[[1]][["clinpred"]] %||% NA),
+    am_score = as.numeric(.x$transcript_consequences[[1]]$alphamissense[["am_pathogenicity"]] %||% NA),
+    am_class = as.character(.x$transcript_consequences[[1]]$alphamissense[["am_class"]] %||% NA_character_),
+    polyphen_score = as.numeric(.x$transcript_consequences[[1]][["polyphen_score"]] %||% NA),
+    polyphen_pred = as.character(.x$transcript_consequences[[1]][["polyphen_prediction"]] %||% NA_character_),
+    opent_gene = as.character(.x$transcript_consequences[[1]]$opentargets[[1]][["OpenTargets_geneId"]] %||% NA_character_),
+    opent_score = as.numeric(.x$transcript_consequences[[1]]$opentargets[[1]][["OpenTargets_l2g"]] %||% NA),
+    transcript_id = as.character(.x$transcript_consequences[[1]]$transcript_id %||% NA_character_),
+    revel = as.numeric(.x$transcript_consequences[[1]]$revel %||% NA),
+    cadd_phred = as.numeric(.x$transcript_consequences[[1]]$cadd_phred %||% NA),
+    biotype = as.character(.x$transcript_consequences[[1]]$biotype %||% NA_character_),
+    chr = as.character(.x$seq_region_name %||% NA_character_),
+    start = as.numeric(.x$start %||% NA),
+    end = as.numeric(.x$end %||% NA),
+    assembly_name = as.character(.x$assembly_name %||% NA_character_)
+  ))
+  
+  # var_df <- future_map_dfr(var, ~tibble(
+  #   id = .x,
+  #   
+  # ))
+  
+  return(vep_df)
+}
+
+# vep <- parse_ensembl(e)
+
+ensembl_plot <- function(ensembl_df, plot_type, category) {
+  
+  if (plot_type == "boxplot") {
+    # empty values are treated as unknown
+    ensembl_long <- ensembl_df %>%
+      pivot_longer(cols = c(clinpred, revel, sift, am_score, cadd_phred, polyphen_score), 
+                   names_to = "score_type", values_to = "score") %>%
+      replace_na(list(polyphen_pred = "unknown", sift_pred = "unknown", consequence = "unknown", am_class = "unknown")) %>%
+      mutate(polyphen_pred = factor(polyphen_pred, levels = c("benign", "possibly_damaging", "probably_damaging", "unknown")),
+             consequence = factor(consequence),
+             am_class = factor(am_class, levels = c("likely_benign", "likely_pathogenic", "ambiguous", "unknown")),
+             sift_pred = factor(sift_pred, levels = c("tolerated", "tolerated_low_confidence", "deleterious_low_confidence", "deleterious", "unknown"))) %>%
+      filter(!is.na(score))
+    
+    # plot boxplot
+    p <- ggplot(ensembl_long, mapping = aes(x = !!rlang::sym(category), y = score, fill = !!rlang::sym(category))) +
+      geom_boxplot() +
+      geom_point() +
+      labs(x = "Class", fill = toString(category)) +
+      facet_wrap(~ score_type, scales = "free_y") +
+      theme_minimal()
+
+    return(p)
+  }
+  else if (plot_type == "manhattan") {
+    
+  }
+  else {return(NULL)}
+}
+
+
+kruskal_dunn <- function(ensembl_df, category) {
+  if (!category %in% c("am_class", "polyphen_pred", "sift_pred", "consequence")) {
+    stop("Category is invalid. Pick one of: 'polyphen_pred', 'am_class', 'sift_pred', or 'consequence'")
+  }
+  
+  print(paste("Category is:", category))
+  
+  ensembl_long <- ensembl_df %>%
+    pivot_longer(cols = c(clinpred, revel, sift, am_score, cadd_phred, polyphen_score),
+                 names_to = "score_type", values_to = "score") %>%
+    replace_na(list(polyphen_pred = "unknown", sift_pred = "unknown", consequence = "unknown", am_class = "unknown")) %>%
+    mutate(polyphen_pred = factor(polyphen_pred, levels = c("benign", "possibly_damaging", "probably_damaging", "unknown")),
+           consequence = factor(consequence, levels = c("")),
+           am_class = factor(am_class, levels = c("likely_benign", "likely_pathogenic", "ambiguous", "unknown")),
+           sift_pred = factor(sift_pred, levels = c("tolerated", "tolerated_low_confidence", "deleterious_low_confidence", "deleterious", "unknown"))) %>%
+    filter(!is.na(score))
+  
+  if (n_distinct(ensembl_long[[category]]) <= 1) {
+    stop("All observations are in the same group. Kruskal test cannot be completed.")
+  }
+
+  ensembl_long %>% filter(!!rlang::sym(category) != "unknown") %>% group_by(score_type) %>%
+  do({
+    k <- kruskal_test(score ~ !!rlang::sym(category), data = .)
+    print(paste("Kruskal-Wallis test for:", unique(.$score_type)))
+    print(k)
+    
+    # pairwise dunn test post hoc comparisons
+    d <- dunn_test(data = ., score ~ !!rlang::sym(category), p.adjust.method = "bonferroni")
+    print(paste("Dunn Test for:", unique(.$score_type)))
+    print(d)
+  
+  })
+}
+
+# polyphen_pred_kdunn <- kruskal_dunn(vep, "polyphen_pred")
+# sift_pred <- kruskal_dunn(vep, "sift_pred")
+# am_res <- kruskal_dunn(vep, "am_class")
+
 
 ## OMIM
 omim_api <- function(genes, api_key) {
@@ -429,4 +578,25 @@ panther_plot <- function(panther_df, slice) {
     return(j)
   }
   else {return(NULL)}
+}
+
+ensembl_sql <- function(snps) {
+  con <- dbConnect(MySQL(), 
+                   user = "anonymous", 
+                   password = "", 
+                   dbname = "homo_sapiens_variation_110_38", 
+                   host = "ensembldb.ensembl.org",
+                   port = 3306)
+  
+  snp_string <- paste0("'", unlist(snps), "'", collapse = ",")
+  query <- paste0("SELECT v.*, vf.*
+        FROM variation v
+        WHERE v.name IN (",snp_string,");")
+  
+  # Fetch data
+  snp_data <- dbGetQuery(con, query)
+  # disconnect when done
+  dbDisconnect(con)
+  
+  return(snp_data)
 }
